@@ -1,0 +1,27 @@
+{
+    "portfolio": {
+        "AAPL": 1000.0,
+        "AMZN": 100.0
+    },
+    "created_at": "2026-03-11 14:46",
+    "history": [
+        {
+            "action": "ADD",
+            "ticker": "AAPL",
+            "amount": 1000.0,
+            "timestamp": "2026-03-11 14:48:26"
+        },
+        {
+            "action": "ADD",
+            "ticker": "AAPL",
+            "amount": 1000.0,
+            "timestamp": "2026-03-11 14:48:33"
+        },
+        {
+            "action": "ADD",
+            "ticker": "AMZN",
+            "amount": 100.0,
+            "timestamp": "2026-03-11 14:49:01"
+        }
+    ]
+}
