@@ -120,7 +120,7 @@ model = load_model_with_batch_shape_fix("lstm_model.h5")
 def get_stock_price(ticker):
     """Get current stock price"""
     try:
-        data = yf.download(ticker, period='1d', progress=False)
+        data = yf.download(ticker, period='5d', progress=False)
         if data is not None and not data.empty:
             price = float(data['Close'].iloc[-1])
             return price if price > 0 else None
@@ -260,11 +260,21 @@ st.markdown("Analyze stocks using **Moving Averages, RSI, Strategy Backtesting &
 # -------------------------------
 st.sidebar.header("Stock Settings")
 
-ticker = st.sidebar.text_input(
-    "Enter Stock Symbol",
+ticker_input = st.sidebar.text_input(
+    "Enter Stock Ticker",
     value="AAPL",
     help="Examples: AAPL, TSLA, INFY.NS, TCS.NS"
 )
+
+ticker = ticker_input.upper().strip()
+
+if "last_ticker" not in st.session_state:
+    st.session_state.last_ticker = ticker
+
+if ticker != st.session_state.last_ticker:
+    st.cache_data.clear()
+    st.session_state.last_ticker = ticker
+    st.rerun()
 
 period = st.sidebar.selectbox(
     "Select Time Period",
@@ -272,8 +282,14 @@ period = st.sidebar.selectbox(
 )
 
 sma_short = st.sidebar.slider("Short SMA Window", 5, 50, 20)
-sma_long = st.sidebar.slider("Long SMA Window", 20, 200, 50)
+sma_long = st.sidebar.slider("Long SMA Window", 20, 200, 50) 
 rsi_period = st.sidebar.slider("RSI Period", 7, 30, 14)
+
+# Refresh button
+if st.sidebar.button("🔄 Refresh Data & Clear Cache", help="Force reload"):
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.rerun()
 
 # Portfolio Simulator
 # --------------------------------
@@ -299,7 +315,7 @@ with st.sidebar.expander("🔨 Build Portfolio", expanded=True):
     
     with col1:
         new_ticker = st.text_input(
-            "Stock Symbol",
+            "Stock Ticker",
             placeholder="AAPL",
             key="new_ticker"
         )
@@ -402,73 +418,36 @@ with st.sidebar.expander("📊 View Portfolio", expanded=False):
 # Fetch Stock Data
 # -------------------------------
 def load_data(ticker, period):
+    """Load stock data safely - NO CACHING for fresh data"""
     try:
-        import warnings
-        warnings.filterwarnings('ignore')
-        
-        st.write(f"⏳ Attempting to download data for {ticker}...")
-        
-        # Try with retry logic for connection issues
-        for attempt in range(3):
-            try:
-                st.write(f"Attempt {attempt + 1}/3...")
-                df = yf.download(
-                    ticker, 
-                    period=period,
-                    progress=False,
-                    timeout=10
-                )
-                
-                if df is not None and not df.empty:
-                    st.write(f"✓ Downloaded successfully. Rows: {len(df)}")
-                    break
-            except (json.JSONDecodeError, requests.exceptions.RequestException, Exception) as e:
-                st.write(f"⚠️ Attempt {attempt + 1} failed: {type(e).__name__}")
-                if attempt == 2:
-                    raise
-                import time
-                time.sleep(2)  # Wait before retry
-        
-        # Handle empty result
-        if df is None:
-            st.write("⚠️ Download returned None")
+        df = yf.download(
+            ticker.upper(),
+            period=period,
+            progress=False
+        )
+
+        if df is None or df.empty:
             return None
-        
-        if isinstance(df, pd.DataFrame) and df.empty:
-            st.write("⚠️ Download returned empty dataframe")
-            return None
-        
-        if not isinstance(df, pd.DataFrame):
-            st.write(f"⚠️ Download returned {type(df)} instead of DataFrame")
-            return None
-            
-        # Handle MultiIndex columns if present
+
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        
-        # Ensure Close column exists before processing
-        if 'Close' not in df.columns:
-            st.error("Close price column not found in downloaded data")
+
+        df.reset_index(inplace=True)
+
+        if "Close" not in df.columns:
             return None
-        
-        # Reset index to make Date a column
-        if df.index.name == 'Date' or df.index.name is None:
-            df.reset_index(inplace=True)
-        
-        # Only drop NAs in Close prices
-        df = df.dropna(subset=['Close'])
-        
-        st.write(f"✓ Data processed: {len(df)} rows")
-        
+
+        df = df.dropna(subset=["Close"])
+
         return df
+
     except Exception as e:
-        st.error(f"Error: {type(e).__name__}: {str(e)}")
+        st.error(f"Error loading data: {e}")
         return None
 
 
 # Fetch Fundamental Data
 # -------------------------------
-@st.cache_data(ttl=3600)
 def get_fundamentals(ticker):
     """Fetch fundamental metrics for the stock"""
     try:
@@ -497,7 +476,6 @@ def get_fundamentals(ticker):
 
 # Get Dividend History
 # -------------------------------
-@st.cache_data(ttl=3600)
 def get_dividend_history(ticker):
     """Fetch dividend history for the stock"""
     try:
@@ -518,7 +496,6 @@ def get_dividend_history(ticker):
 
 # Get Earnings Calendar
 # -------------------------------
-@st.cache_data(ttl=3600)
 def get_earnings_info(ticker):
     """Fetch earnings information"""
     try:
@@ -541,7 +518,9 @@ def get_earnings_info(ticker):
 
 
 
-# Load data with debugging
+
+
+# Load data (ticker and period are now properly passed)
 df = load_data(ticker, period)
 
 if df is None or df.empty or len(df) < 2:
@@ -877,6 +856,154 @@ if st.session_state.portfolio and len(st.session_state.portfolio) > 0:
         st.markdown("---")
 
 # ======================================
+# AI Market Story Generator
+# ======================================
+
+def analyze_volume_trend(df_data):
+    """Analyze volume trend (Increasing, Decreasing, or Stable)"""
+    if len(df_data) < 20:
+        return "Stable", 0
+    
+    recent_volume = df_data['Volume'].tail(10).mean()
+    past_volume = df_data['Volume'].tail(20).head(10).mean()
+    
+    volume_change = (recent_volume - past_volume) / past_volume * 100 if past_volume > 0 else 0
+    
+    if volume_change > 10:
+        trend = "Increasing"
+    elif volume_change < -10:
+        trend = "Decreasing"
+    else:
+        trend = "Stable"
+    
+    confidence = min(abs(volume_change) / 30 * 100, 100)
+    return trend, int(confidence)
+
+def get_price_momentum(df_data):
+    """Calculate price momentum (acceleration of price change)"""
+    if len(df_data) < 5:
+        return "Neutral", 0
+    
+    recent_5 = df_data['Close'].tail(5).pct_change().mean() * 100
+    
+    if recent_5 > 1:
+        momentum = "Strong Upward"
+        strength = min(abs(recent_5) / 5 * 100, 100)
+    elif recent_5 < -1:
+        momentum = "Strong Downward"
+        strength = min(abs(recent_5) / 5 * 100, 100)
+    else:
+        momentum = "Neutral"
+        strength = 50
+    
+    return momentum, int(strength)
+
+def generate_market_story(df_data, ticker, trend, confidence, sma_short_val, sma_long_val):
+    """Generate a human-like narrative explanation of market behavior"""
+    
+    if len(df_data) < 20:
+        return f"{ticker} lacks sufficient data for analysis."
+    
+    # Get analysis data
+    volume_trend, volume_confidence = analyze_volume_trend(df_data)
+    momentum, momentum_strength = get_price_momentum(df_data)
+    
+    latest = df_data.iloc[-1]
+    current_price = latest['Close']
+    sma_s = latest[f'SMA_Short'] if f'SMA_Short' in latest else None
+    sma_l = latest[f'SMA_Long'] if f'SMA_Long' in latest else None
+    rsi_val = latest['RSI'] if 'RSI' in latest else 50
+    
+    # Price position relative to SMAs
+    price_vs_sma_s = "above" if sma_s and current_price > sma_s else "below"
+    price_vs_sma_l = "above" if sma_l and current_price > sma_l else "below"
+    
+    # Volume strength indicator
+    volume_strength = "strong" if volume_confidence > 70 else "moderate" if volume_confidence > 40 else "weak"
+    
+    # RSI interpretation
+    if rsi_val > 70:
+        rsi_interpretation = "overbought conditions"
+    elif rsi_val < 30:
+        rsi_interpretation = "oversold conditions"
+    else:
+        rsi_interpretation = "neutral momentum"
+    
+    # Build the story
+    stories = []
+    
+    if trend == "Bullish":
+        if volume_trend == "Increasing":
+            stories.append(
+                f"{ticker} stock is currently showing **bullish momentum** due to {volume_strength} "
+                f"increasing volume and positive trend strength. The price is trading {price_vs_sma_s} "
+                f"its short-term moving average and {price_vs_sma_l} its long-term average, indicating "
+                f"sustained upward pressure. With {rsi_interpretation}, the bullish setup appears robust."
+            )
+            
+            stories.append(
+                f"Strong buying interest is evident in {ticker}, as rising volume accompanies the "
+                f"uptrend. The stock is maintaining positions {price_vs_sma_s} the short-term average "
+                f"and is clearly in an uptrend above the long-term average. This {volume_strength}-volume "
+                f"rally suggests conviction from market participants."
+            )
+        else:
+            stories.append(
+                f"{ticker} is trading with **bullish bias** as the long-term uptrend remains intact. "
+                f"Although volume appears {volume_trend.lower()} recently, the price is firmly "
+                f"{price_vs_sma_l} the long-term moving average. {rsi_interpretation.capitalize()} "
+                f"suggests the uptrend still has momentum, despite the recent volume decline."
+            )
+            
+            stories.append(
+                f"The bullish technical setup in {ticker} persists with the price maintaining its position "
+                f"{price_vs_sma_s} the short-term average. The {volume_trend.lower()} volume is noteworthy, "
+                f"but as long as the price stays {price_vs_sma_l} the long-term average, the overall "
+                f"uptrend bias remains in effect."
+            )
+    
+    else:  # Bearish
+        if volume_trend == "Increasing":
+            stories.append(
+                f"{ticker} is exhibiting **bearish pressure** with {volume_strength} selling volume "
+                f"reinforcing the downside. The stock has broken below its short-term moving average and is "
+                f"trading {price_vs_sma_l} the long-term average, signaling weakness. The combination of "
+                f"{volume_strength} volume and declining prices suggests renewed selling interest."
+            )
+            
+            stories.append(
+                f"Deteriorating conditions in {ticker} are evident as rising volume accompanies the downtrend. "
+                f"The price has fallen {price_vs_sma_l} the key long-term average, which often marks the "
+                f"transition from uptrend to downtrend. With {rsi_interpretation}, further weakness may unfold."
+            )
+        else:
+            stories.append(
+                f"{ticker} remains under **bearish pressure** despite declining volume. The stock is trading "
+                f"{price_vs_sma_l} both short and long-term moving averages, confirming the downtrend. "
+                f"The reduced selling volume could indicate consolidation before the next downleg, or a "
+                f"temporary pause in the decline."
+            )
+            
+            stories.append(
+                f"The bearish structure in {ticker} persists, with the price firmly below the long-term "
+                f"moving average. Although sellers appear to be taking a breather (lower volume), the "
+                f"downtrend remains the primary structure. Any recovery move should be treated with caution "
+                f"until the stock reclaims the long-term average."
+            )
+    
+    # Add confidence note
+    confidence_note = (
+        f"**Confidence Level: {confidence}%** — This analysis is based on technical indicators and "
+        f"recent price action. Market conditions can change rapidly."
+    )
+    
+    # Select a random story for variety
+    import random
+    selected_story = random.choice(stories)
+    
+    return f"{selected_story}\n\n{confidence_note}"
+
+# ======================================
 # Market Trend Detector
 # ======================================
 
@@ -941,6 +1068,12 @@ def detect_market_trend(df_data, sma_short_val, sma_long_val):
 if not df.empty:
     trend, confidence = detect_market_trend(df, sma_short, sma_long)
     st.subheader(f"📊 Market Trend: {trend} ({confidence}%)")
+    
+    # Generate and display AI Market Story
+    st.markdown("---")
+    st.subheader("📖 AI Market Story Generator")
+    market_story = generate_market_story(df, ticker, trend, confidence, sma_short, sma_long)
+    st.markdown(market_story)
 
 # ======================================
 # Technical Analysis Charts
@@ -1177,9 +1310,3 @@ elif latest_signal == -1:
 
 else:
     st.warning("HOLD")
-
-# -------------------------------
-# Footer
-# -------------------------------
-st.markdown("---")
-st.markdown("Built with Python, Streamlit & LSTM")
